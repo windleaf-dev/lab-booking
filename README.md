@@ -300,9 +300,11 @@ npm run dev
 ```powershell
 cd lab-booking
 Copy-Item .env.example .env
-# 修改 .env 中的 DB_PASSWORD、JWT_SECRET
+# 编辑 .env：DB_PASSWORD、JWT_SECRET 为必填项，未填会报错退出
 docker compose up -d --build
 ```
+
+> 这两个变量没有默认值，`docker compose` 检测到缺失会直接报错，避免用弱口令启动。
 
 打开 <http://127.0.0.1:8080>。常用命令：
 

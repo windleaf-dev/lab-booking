@@ -6,7 +6,7 @@ services:
     container_name: lab-booking-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-lab123456}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD（参考 .env.example）}
       MYSQL_DATABASE: lab_booking
       TZ: Asia/Shanghai
     command:
@@ -57,12 +57,12 @@ services:
       DB_PORT: 3306
       DB_NAME: lab_booking
       DB_USERNAME: root
-      DB_PASSWORD: ${DB_PASSWORD:-lab123456}
+      DB_PASSWORD: ${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD（参考 .env.example）}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_ENABLED: "true"
       REDIS_LOCK_TTL_SECONDS: "5"
-      JWT_SECRET: ${JWT_SECRET:-lab-booking-demo-secret-change-me-before-production}
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 中设置 JWT_SECRET（至少 32 字符，参考 .env.example）}
       TZ: Asia/Shanghai
     ports:
       - "8091:8091"
