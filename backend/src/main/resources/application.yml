@@ -1,0 +1,46 @@
+server:
+  port: 8091
+  address: 127.0.0.1
+
+spring:
+  application:
+    name: lab-booking-backend
+  # 本地敏感配置：数据库口令、JWT 密钥
+  config:
+    import: optional:classpath:application-local.yml
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/lab_booking?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 10000
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/schema.sql
+      continue-on-error: false
+      encoding: UTF-8
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+    jdbc-type-for-null: NULL
+
+logging:
+  level:
+    root: info
+    com.lab: info
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level %logger{25} - %msg%n"
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:}
+    expire-hours: 12
