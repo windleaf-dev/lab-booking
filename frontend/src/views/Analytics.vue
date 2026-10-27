@@ -188,8 +188,8 @@ function renderCategory() {
   })
 }
 
-async function loadAll() {
-  loading.value = true
+async function loadAll(silent = false) {
+  if (!silent) loading.value = true
   try {
     const [ov, tr, st, tp, ct] = await Promise.all([
       fetchOverview(),
@@ -237,13 +237,25 @@ function handleResize() {
   charts.forEach((chart) => chart.resize())
 }
 
+// 实时事件不弹全屏 loading，静默刷新图表
+let realtimeTimer = null
+function handleRealtime() {
+  if (realtimeTimer) clearTimeout(realtimeTimer)
+  realtimeTimer = setTimeout(() => {
+    loadAll(true)
+  }, 500)
+}
+
 onMounted(async () => {
   await loadAll()
   window.addEventListener('resize', handleResize)
+  window.addEventListener('lab:booking-changed', handleRealtime)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
+  window.removeEventListener('lab:booking-changed', handleRealtime)
+  if (realtimeTimer) clearTimeout(realtimeTimer)
   charts.forEach((chart) => chart.dispose())
   charts.length = 0
 })

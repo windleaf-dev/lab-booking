@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { fetchMyBookings, cancelBooking, checkinBooking } from '../api/booking'
@@ -93,6 +93,15 @@ function handlePage(page) {
   load()
 }
 
+// 审批 / 自动流转结果通过 WebSocket 推来后，列表实时更新
+let realtimeTimer = null
+function handleRealtime() {
+  if (realtimeTimer) clearTimeout(realtimeTimer)
+  realtimeTimer = setTimeout(() => {
+    load()
+  }, 400)
+}
+
 async function handleCancel(row) {
   try {
     await ElMessageBox.confirm(
@@ -124,7 +133,15 @@ async function handleCheckin(row) {
   load()
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  window.addEventListener('lab:booking-changed', handleRealtime)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('lab:booking-changed', handleRealtime)
+  if (realtimeTimer) clearTimeout(realtimeTimer)
+})
 </script>
 
 <template>

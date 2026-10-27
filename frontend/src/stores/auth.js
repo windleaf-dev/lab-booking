@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { login as loginApi, fetchProfile, logout as logoutApi } from '../api/auth'
+import { closeSocket } from '../utils/socket'
 
 const TOKEN_KEY = 'lab_token'
 const USER_KEY = 'lab_user'
@@ -58,6 +59,7 @@ export const useAuthStore = defineStore('auth', {
     },
 
     clear() {
+      closeSocket()
       this.token = ''
       this.user = null
       localStorage.removeItem(TOKEN_KEY)

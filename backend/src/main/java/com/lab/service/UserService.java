@@ -1,9 +1,11 @@
 package com.lab.service;
 
 import com.lab.common.BizException;
+import com.lab.common.CacheNames;
 import com.lab.common.PageResult;
 import com.lab.mapper.UserMapper;
 import com.lab.model.User;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -29,6 +31,7 @@ public class UserService {
         return PageResult.of(userMapper.count(keyword, role), records);
     }
 
+    @CacheEvict(cacheNames = CacheNames.STATS_OVERVIEW, allEntries = true)
     public User create(String username, String password, String realName, String role, Integer status) {
         if (username == null || username.isBlank()) {
             throw BizException.badRequest("用户名不能为空");

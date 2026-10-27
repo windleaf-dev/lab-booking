@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { fetchSlots, fetchDayBookings, createBooking } from '../api/booking'
 import { fetchDevices } from '../api/device'
@@ -79,6 +79,15 @@ async function loadBookings() {
   } finally {
     bookingsLoading.value = false
   }
+}
+
+// 实时刷新当前日期的占用矩阵（其他同学的预约 / 审批结果）
+let realtimeTimer = null
+function handleRealtime() {
+  if (realtimeTimer) clearTimeout(realtimeTimer)
+  realtimeTimer = setTimeout(() => {
+    loadBookings()
+  }, 400)
 }
 
 watch(date, loadBookings)
@@ -190,7 +199,15 @@ function isMine(booking) {
   return booking?.userId === auth.user?.id
 }
 
-onMounted(loadBase)
+onMounted(() => {
+  loadBase()
+  window.addEventListener('lab:booking-changed', handleRealtime)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('lab:booking-changed', handleRealtime)
+  if (realtimeTimer) clearTimeout(realtimeTimer)
+})
 </script>
 
 <template>

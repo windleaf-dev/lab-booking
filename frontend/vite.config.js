@@ -13,6 +13,12 @@ export default defineConfig({
         target: 'http://127.0.0.1:8091',
         changeOrigin: true,
       },
+      // WebSocket 实时通知：ws: true 让 Vite 代理升级连接
+      '/ws': {
+        target: 'ws://127.0.0.1:8091',
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
   build: {

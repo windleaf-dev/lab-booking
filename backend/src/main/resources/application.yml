@@ -1,6 +1,7 @@
 server:
   port: 8091
-  address: 127.0.0.1
+  # 本地默认只监听回环地址；Docker 中通过 SERVER_ADDRESS=0.0.0.0 覆盖
+  address: ${SERVER_ADDRESS:127.0.0.1}
 
 spring:
   application:
@@ -14,8 +15,8 @@ spring:
       max-request-size: 10MB
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://127.0.0.1:3306/lab_booking?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/${DB_NAME:lab_booking}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:}
     hikari:
       maximum-pool-size: 10
@@ -27,6 +28,22 @@ spring:
       schema-locations: classpath:db/schema.sql
       continue-on-error: false
       encoding: UTF-8
+  # Redis 连接参数；REDIS_ENABLED=false 时不会真正建立业务连接
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: 800ms
+      connect-timeout: 800ms
+      lettuce:
+        shutdown-timeout: 200ms
+  # 默认使用 Caffeine 本地缓存；app.redis.enabled=true 时切换为 RedisCacheManager
+  cache:
+    type: caffeine
+    caffeine:
+      spec: maximumSize=500,expireAfterWrite=60s
 
 mybatis:
   configuration:
@@ -44,3 +61,7 @@ app:
   jwt:
     secret: ${JWT_SECRET:}
     expire-hours: 12
+  redis:
+    # 打开后启用 Redis 缓存与抢约分布式锁；Docker Compose 中自动开启
+    enabled: ${REDIS_ENABLED:false}
+    lock-ttl-seconds: ${REDIS_LOCK_TTL_SECONDS:5}

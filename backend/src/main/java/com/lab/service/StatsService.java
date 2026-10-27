@@ -1,9 +1,11 @@
 package com.lab.service;
 
+import com.lab.common.CacheNames;
 import com.lab.mapper.DeviceCategoryMapper;
 import com.lab.mapper.DeviceMapper;
 import com.lab.mapper.StatsMapper;
 import com.lab.mapper.UserMapper;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.sql.Date;
@@ -32,6 +34,7 @@ public class StatsService {
         this.statsMapper = statsMapper;
     }
 
+    @Cacheable(cacheNames = CacheNames.STATS_OVERVIEW, sync = true)
     public Map<String, Object> overview() {
         long deviceCount = deviceMapper.countAll();
         long availableCount = deviceMapper.countByStatus("AVAILABLE");
@@ -53,19 +56,23 @@ public class StatsService {
         return data;
     }
 
+    @Cacheable(cacheNames = CacheNames.STATS_CATEGORY)
     public List<Map<String, Object>> deviceByCategory() {
         return normalize(statsMapper.deviceByCategory());
     }
 
+    @Cacheable(cacheNames = CacheNames.STATS_STATUS)
     public List<Map<String, Object>> statusDistribution() {
         return normalize(statsMapper.statusDistribution());
     }
 
+    @Cacheable(cacheNames = CacheNames.STATS_TOP)
     public List<Map<String, Object>> topDevices() {
         return normalize(statsMapper.topDevices());
     }
 
     /** 最近 N 天预约趋势，缺失日期补 0，保证折线连续 */
+    @Cacheable(cacheNames = CacheNames.STATS_TREND)
     public List<Map<String, Object>> bookingTrend(int days) {
         int span = Math.max(1, Math.min(days, 30));
         LocalDate start = LocalDate.now().minusDays(span - 1L);

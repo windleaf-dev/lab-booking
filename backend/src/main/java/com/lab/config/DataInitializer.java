@@ -176,9 +176,9 @@ public class DataInitializer implements CommandLineRunner {
         }
         if ("COMPLETED".equals(targetStatus)) {
             bookingMapper.checkin(booking.getId(), user.getId());
-            bookingMapper.finishBySystem(booking.getId(), "COMPLETED", "已完成");
+            bookingMapper.finishBySystem(booking.getId(), "COMPLETED", "已完成", "APPROVED");
         } else if ("VIOLATED".equals(targetStatus)) {
-            bookingMapper.finishBySystem(booking.getId(), "VIOLATED", "未签到，系统判定违约");
+            bookingMapper.finishBySystem(booking.getId(), "VIOLATED", "未签到，系统判定违约", "APPROVED");
         }
     }
 

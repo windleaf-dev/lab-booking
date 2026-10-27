@@ -1,11 +1,14 @@
 package com.lab.service;
 
 import com.lab.common.BizException;
+import com.lab.common.CacheNames;
 import com.lab.common.PageResult;
 import com.lab.mapper.DeviceCategoryMapper;
 import com.lab.mapper.DeviceMapper;
 import com.lab.mapper.StatsMapper;
 import com.lab.model.Device;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.Set;
@@ -25,6 +28,7 @@ public class DeviceService {
         this.statsMapper = statsMapper;
     }
 
+    @Cacheable(cacheNames = CacheNames.DEVICE_PAGE)
     public PageResult<Device> page(String keyword, Long categoryId, String status, int page, int size) {
         return PageResult.of(
                 deviceMapper.count(keyword, categoryId, status),
@@ -39,6 +43,8 @@ public class DeviceService {
         return device;
     }
 
+    @CacheEvict(cacheNames = {CacheNames.DEVICE_PAGE, CacheNames.CATEGORIES,
+            CacheNames.STATS_CATEGORY, CacheNames.STATS_OVERVIEW}, allEntries = true)
     public Device create(Device req) {
         validate(req);
         if (deviceMapper.countByCode(req.getCode(), 0) > 0) {
@@ -48,6 +54,8 @@ public class DeviceService {
         return get(req.getId());
     }
 
+    @CacheEvict(cacheNames = {CacheNames.DEVICE_PAGE, CacheNames.CATEGORIES,
+            CacheNames.STATS_CATEGORY, CacheNames.STATS_OVERVIEW}, allEntries = true)
     public Device update(long id, Device req) {
         if (deviceMapper.findById(id) == null) {
             throw BizException.notFound("设备不存在");
@@ -61,6 +69,8 @@ public class DeviceService {
         return get(id);
     }
 
+    @CacheEvict(cacheNames = {CacheNames.DEVICE_PAGE, CacheNames.CATEGORIES,
+            CacheNames.STATS_CATEGORY, CacheNames.STATS_OVERVIEW}, allEntries = true)
     public void delete(long id) {
         if (deviceMapper.findById(id) == null) {
             throw BizException.notFound("设备不存在");

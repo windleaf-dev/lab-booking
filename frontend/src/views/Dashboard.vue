@@ -315,13 +315,25 @@ function handleResize() {
   charts.forEach((chart) => chart.resize())
 }
 
+// WebSocket 推送的预约变化：400ms 防抖，避免短时间多条消息重复拉取
+let realtimeTimer = null
+function handleRealtime() {
+  if (realtimeTimer) clearTimeout(realtimeTimer)
+  realtimeTimer = setTimeout(() => {
+    loadData()
+  }, 400)
+}
+
 onMounted(async () => {
   await loadData()
   window.addEventListener('resize', handleResize)
+  window.addEventListener('lab:booking-changed', handleRealtime)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
+  window.removeEventListener('lab:booking-changed', handleRealtime)
+  if (realtimeTimer) clearTimeout(realtimeTimer)
   charts.forEach((chart) => chart.dispose())
   charts.length = 0
 })

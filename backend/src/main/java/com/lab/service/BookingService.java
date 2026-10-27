@@ -4,7 +4,6 @@ import com.lab.common.BizException;
 import com.lab.common.PageResult;
 import com.lab.mapper.BookingMapper;
 import com.lab.mapper.DeviceMapper;
-import com.lab.mapper.StatsMapper;
 import com.lab.mapper.TimeSlotMapper;
 import com.lab.model.Booking;
 import com.lab.model.Device;
@@ -15,9 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 @Service
@@ -33,19 +30,29 @@ public class BookingService {
     private final BookingMapper bookingMapper;
     private final DeviceMapper deviceMapper;
     private final TimeSlotMapper timeSlotMapper;
-    private final StatsMapper statsMapper;
+    private final BookingStatusService bookingStatusService;
+    private final StatsCacheEvictor statsCacheEvictor;
+    private final NotificationService notificationService;
+    private final RedisLock redisLock;
 
     public BookingService(BookingMapper bookingMapper, DeviceMapper deviceMapper,
-                          TimeSlotMapper timeSlotMapper, StatsMapper statsMapper) {
+                          TimeSlotMapper timeSlotMapper, BookingStatusService bookingStatusService,
+                          StatsCacheEvictor statsCacheEvictor, NotificationService notificationService,
+                          RedisLock redisLock) {
         this.bookingMapper = bookingMapper;
         this.deviceMapper = deviceMapper;
         this.timeSlotMapper = timeSlotMapper;
-        this.statsMapper = statsMapper;
+        this.bookingStatusService = bookingStatusService;
+        this.statsCacheEvictor = statsCacheEvictor;
+        this.notificationService = notificationService;
+        this.redisLock = redisLock;
     }
 
     /**
-     * 创建预约。同一设备 + 日期 + 时段由数据库唯一索引 active_key 兜底，
-     * 并发下只有一条能插入成功。
+     * 创建预约：
+     * 1. Redis 分布式锁做前置削峰（未启用 Redis 时自动跳过）
+     * 2. 数据库唯一索引 active_key 做最终保障
+     * 3. 事务提交后再推送 WebSocket，避免回滚后发出假通知
      */
     @Transactional
     public Booking create(long userId, Long deviceId, Long slotId, LocalDate date, String purpose) {
@@ -79,25 +86,48 @@ public class BookingService {
             throw BizException.badRequest("该时段已经开始，请选择更晚的时段");
         }
 
-        if (bookingMapper.countUserSlot(userId, date, slotId) > 0) {
-            throw BizException.badRequest("你在该时段已有预约，不能重复预约");
+        // 锁粒度：同一设备 + 同一天 + 同一时段；不同设备 / 时段互不影响
+        String lockKey = "lock:booking:" + deviceId + "_" + date + "_" + slotId;
+        String lockToken = redisLock.tryLock(lockKey);
+        if (lockToken == null) {
+            throw BizException.badRequest("该时段正在被其他同学抢约，请稍后重试");
         }
-
-        Booking booking = new Booking();
-        booking.setUserId(userId);
-        booking.setDeviceId(deviceId);
-        booking.setSlotId(slotId);
-        booking.setBookingDate(date);
-        booking.setPurpose(purpose == null ? null : purpose.trim());
-        booking.setStatus("PENDING");
-        booking.setActiveKey(deviceId + "_" + date + "_" + slotId);
 
         try {
+            if (bookingMapper.countUserSlot(userId, date, slotId) > 0) {
+                throw BizException.badRequest("你在该时段已有预约，不能重复预约");
+            }
+
+            Booking booking = new Booking();
+            booking.setUserId(userId);
+            booking.setDeviceId(deviceId);
+            booking.setSlotId(slotId);
+            booking.setBookingDate(date);
+            booking.setPurpose(purpose == null ? null : purpose.trim());
+            booking.setStatus("PENDING");
+            booking.setActiveKey(deviceId + "_" + date + "_" + slotId);
             bookingMapper.insert(booking);
+
+            Booking saved = bookingMapper.findById(booking.getId());
+            statsCacheEvictor.evictStats();
+            notificationService.notifyStaff(
+                    "PENDING_CREATED",
+                    "新的预约待审批",
+                    saved.getRealName() + " 提交了 " + describe(saved),
+                    saved.getId());
+            notificationService.notifyUser(
+                    userId,
+                    "BOOKING_CREATED",
+                    "预约已提交",
+                    "已提交 " + describe(saved) + "，等待教师审批",
+                    saved.getId());
+            return saved;
         } catch (DuplicateKeyException e) {
             throw BizException.badRequest("该设备的这个时段已被预约，请选择其他时段");
+        } finally {
+            // 事务结束后再释放锁，避免提交前被其他请求抢到
+            redisLock.unlockAfterCompletion(lockKey, lockToken);
         }
-        return bookingMapper.findById(booking.getId());
     }
 
     /** 某天的全部有效预约，用于前端渲染「设备 × 时段」矩阵 */
@@ -105,12 +135,12 @@ public class BookingService {
         if (date == null) {
             date = LocalDate.now();
         }
-        refreshStatuses();
+        bookingStatusService.refreshStatuses();
         return bookingMapper.listByDate(date);
     }
 
     public PageResult<Booking> mine(long userId, String status, int page, int size) {
-        refreshStatuses();
+        bookingStatusService.refreshStatuses();
         return PageResult.of(
                 bookingMapper.countMine(userId, status),
                 bookingMapper.pageMine(userId, status, (page - 1) * size, size));
@@ -129,6 +159,17 @@ public class BookingService {
         if (bookingMapper.cancel(id, userId) == 0) {
             throw BizException.badRequest("取消失败，请刷新后重试");
         }
+
+        statsCacheEvictor.evictStats();
+        if ("PENDING".equals(booking.getStatus())) {
+            notificationService.notifyPendingChanged(id);
+        }
+        notificationService.notifyUser(
+                userId,
+                "BOOKING_CANCELLED",
+                "预约已取消",
+                "你取消了 " + describe(booking),
+                id);
     }
 
     /** 签到：预约开始前 30 分钟到结束前 */
@@ -158,7 +199,7 @@ public class BookingService {
     }
 
     public PageResult<Booking> pageAll(String status, String keyword, LocalDate date, int page, int size) {
-        refreshStatuses();
+        bookingStatusService.refreshStatuses();
         return PageResult.of(
                 bookingMapper.countAll(status, keyword, date),
                 bookingMapper.pageAll(status, keyword, date, (page - 1) * size, size));
@@ -188,30 +229,16 @@ public class BookingService {
         if (rows == 0) {
             throw BizException.badRequest("审批失败，请刷新后重试");
         }
-    }
 
-    /**
-     * 状态自动流转：
-     * - 已通过但未签到且时段结束 → 违约
-     * - 已通过且已签到、时段结束 → 已完成
-     * - 待审批但时段已开始 → 自动取消
-     */
-    @Transactional
-    public void refreshStatuses() {
-        LocalDate today = LocalDate.now();
-        LocalTime now = LocalTime.now();
-
-        for (Booking booking : bookingMapper.findFinishedApproved(today, now)) {
-            if (booking.getCheckinAt() != null) {
-                bookingMapper.finishBySystem(booking.getId(), "COMPLETED", "已完成");
-            } else {
-                bookingMapper.finishBySystem(booking.getId(), "VIOLATED", "未签到，系统判定违约");
-            }
-        }
-
-        for (Booking booking : bookingMapper.findExpiredPending(today, now)) {
-            bookingMapper.finishBySystem(booking.getId(), "CANCELLED", "超时未审批，系统自动取消");
-        }
+        statsCacheEvictor.evictStats();
+        notificationService.notifyPendingChanged(id);
+        notificationService.notifyUser(
+                booking.getUserId(),
+                approved ? "BOOKING_APPROVED" : "BOOKING_REJECTED",
+                approved ? "预约已通过" : "预约被驳回",
+                "你对 " + describe(booking) + " 的预约" + (approved ? "已通过" : "被驳回")
+                        + (cleanRemark == null || cleanRemark.isBlank() ? "" : "，备注：" + cleanRemark),
+                id);
     }
 
     private Booking requireOwned(long userId, long id) {
@@ -222,11 +249,11 @@ public class BookingService {
         return booking;
     }
 
-    /** 给统计模块复用 */
-    public Map<String, Object> quickNumbers() {
-        return Map.of(
-                "pending", statsMapper.countByStatus("PENDING"),
-                "today", statsMapper.countTodayBookings(),
-                "violated", statsMapper.countByStatus("VIOLATED"));
+    private String describe(Booking booking) {
+        String device = booking.getDeviceName() == null
+                ? "设备 #" + booking.getDeviceId()
+                : booking.getDeviceName();
+        String slot = booking.getSlotName() == null ? "" : " " + booking.getSlotName();
+        return device + " · " + booking.getBookingDate() + slot;
     }
 }

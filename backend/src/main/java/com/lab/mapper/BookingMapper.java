@@ -90,8 +90,10 @@ public interface BookingMapper {
                           @Param("size") int size);
 
     @Select("""
-            select b.*, s.start_time, s.end_time
-            from booking b join time_slot s on s.id = b.slot_id
+            select b.*, d.name as device_name, s.name as slot_name, s.start_time, s.end_time
+            from booking b
+            join device d on d.id = b.device_id
+            join time_slot s on s.id = b.slot_id
             where b.status = 'PENDING'
               and (b.booking_date < #{today}
                    or (b.booking_date = #{today} and s.start_time <= #{now}))
@@ -119,8 +121,10 @@ public interface BookingMapper {
                       @Param("slotId") long slotId);
 
     @Select("""
-            select b.*, s.start_time, s.end_time
-            from booking b join time_slot s on s.id = b.slot_id
+            select b.*, d.name as device_name, s.name as slot_name, s.start_time, s.end_time
+            from booking b
+            join device d on d.id = b.device_id
+            join time_slot s on s.id = b.slot_id
             where b.status = 'APPROVED'
               and (b.booking_date < #{today}
                    or (b.booking_date = #{today} and s.end_time <= #{now}))
@@ -166,9 +170,10 @@ public interface BookingMapper {
 
     @Update("""
             update booking set status = #{status}, active_key = null, approve_remark = #{remark}
-            where id = #{id}
+            where id = #{id} and status = #{expectedStatus}
             """)
     int finishBySystem(@Param("id") long id,
                        @Param("status") String status,
-                       @Param("remark") String remark);
+                       @Param("remark") String remark,
+                       @Param("expectedStatus") String expectedStatus);
 }

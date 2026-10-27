@@ -1,9 +1,12 @@
 package com.lab.service;
 
 import com.lab.common.BizException;
+import com.lab.common.CacheNames;
 import com.lab.mapper.DeviceCategoryMapper;
 import com.lab.mapper.DeviceMapper;
 import com.lab.model.DeviceCategory;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -19,10 +22,13 @@ public class DeviceCategoryService {
         this.deviceMapper = deviceMapper;
     }
 
+    @Cacheable(cacheNames = CacheNames.CATEGORIES)
     public List<DeviceCategory> listAll() {
         return categoryMapper.listAll();
     }
 
+    @CacheEvict(cacheNames = {CacheNames.CATEGORIES, CacheNames.DEVICE_PAGE,
+            CacheNames.STATS_CATEGORY, CacheNames.STATS_OVERVIEW}, allEntries = true)
     public DeviceCategory create(DeviceCategory req) {
         validate(req);
         if (categoryMapper.countByCode(req.getCode(), 0) > 0) {
@@ -35,6 +41,8 @@ public class DeviceCategoryService {
         return categoryMapper.findById(req.getId());
     }
 
+    @CacheEvict(cacheNames = {CacheNames.CATEGORIES, CacheNames.DEVICE_PAGE,
+            CacheNames.STATS_CATEGORY, CacheNames.STATS_OVERVIEW}, allEntries = true)
     public DeviceCategory update(long id, DeviceCategory req) {
         if (categoryMapper.findById(id) == null) {
             throw BizException.notFound("分类不存在");
@@ -51,6 +59,8 @@ public class DeviceCategoryService {
         return categoryMapper.findById(id);
     }
 
+    @CacheEvict(cacheNames = {CacheNames.CATEGORIES, CacheNames.DEVICE_PAGE,
+            CacheNames.STATS_CATEGORY, CacheNames.STATS_OVERVIEW}, allEntries = true)
     public void delete(long id) {
         if (categoryMapper.findById(id) == null) {
             throw BizException.notFound("分类不存在");

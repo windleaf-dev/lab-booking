@@ -2,17 +2,21 @@
 
 面向高校实验室的全栈预约平台：设备台账、时段预约、教师审批、签到与违约、使用统计、用户与角色管理，前后端分离，带深色科技风管理界面。
 
-当前进度：**第二阶段（预约 / 审批 / 签到 / 违约 / 统计分析 / 用户管理）已完成**，前后端已联调通过。
+当前进度：**第三阶段（Redis 缓存 + 抢约分布式锁 + WebSocket 实时通知 + Docker Compose）已完成**，前后端已联调通过，Redis 与 WebSocket 已做真实链路验证。
 
 ---
 
 ## 1. 项目亮点
 
 - **完整业务闭环**：预约 → 审批 → 签到 → 完成 / 违约 / 取消，状态由定时任务自动流转
-- **并发安全的占位设计**：`active_key` 唯一索引兜底，配合捕获 `DuplicateKeyException`，避免同一设备同一时段被重复预约
+- **并发安全的占位设计**：Redis 分布式锁前置削峰 + `active_key` 唯一索引兜底，再配合 `DuplicateKeyException` 友好提示
+- **热点缓存与自动失效**：设备分页 / 分类 / 统计走 Caffeine 或 Redis 缓存，预约变更后主动清理统计缓存
+- **实时通知**：WebSocket 推送预约提交、审批结果、自动完成 / 违约，前端铃铛消息中心 + 页面无刷新更新
+- **缓存可降级**：Redis 未启用或临时故障时自动回退到查库，业务不中断
 - **双重权限边界**：JWT + 拦截器 + `AuthContext` 后端校验，前端路由守卫与按钮显隐只负责体验
 - **深色科技风 UI**：玻璃面板、霓虹光效、雷达动画、ECharts 暗色主题、响应式侧边栏
 - **真实演示数据**：首次启动自动生成账号、设备、预约趋势、待审批与违约记录，打开即可演示
+- **一键部署**：Docker Compose 编排 MySQL + Redis + 后端 + Nginx 前端，支持健康检查与自动重启
 - **工程细节**：统一响应、全局异常、分页、状态机、定时任务、密码自助修改、按需引入 ECharts
 
 ---
@@ -21,10 +25,12 @@
 
 | 层 | 技术 |
 | --- | --- |
-| 前端 | Vue 3、Vite 5、Vue Router 4、Pinia 2、Element Plus、ECharts 5（按需引入）、Axios |
-| 后端 | Spring Boot 3.5、MyBatis 3、Spring Scheduling、Spring Security Crypto（BCrypt） |
+| 前端 | Vue 3、Vite 5、Vue Router 4、Pinia 2、Element Plus、ECharts 5（按需引入）、Axios、原生 WebSocket |
+| 后端 | Spring Boot 3.5、MyBatis 3、Spring Scheduling、Spring Security Crypto（BCrypt）、Spring WebSocket、Spring Cache |
+| 缓存 / 协调 | Redis 7（`SET NX` 分布式锁 + Lua 解锁）、Caffeine（本地默认缓存） |
 | 数据库 | MySQL 8 |
-| 鉴权 | 手写 HS256 JWT + 拦截器 + ThreadLocal 用户上下文 |
+| 鉴权 | 手写 HS256 JWT + 拦截器 + ThreadLocal 用户上下文 + WebSocket 握手校验 |
+| 部署 | Docker、Docker Compose、Nginx 反向代理与静态资源托管 |
 | 构建 | Maven 3.10、Node.js 18+ |
 
 后端只提供 `/api/**` JSON 接口，前端开发期通过 Vite 代理访问，避免跨域配置。
@@ -80,6 +86,28 @@
 - 4 张 ECharts 图表 + 待审批队列 / 学生快捷入口
 - 模块运行状态条，展示当前已启用能力
 
+### 3.9 实时通知（WebSocket）
+- 顶栏连接状态灯：`REALTIME` / `LINKING` / `OFFLINE`
+- 铃铛消息中心：未读角标、消息列表、清空、最近 20 条
+- 学生收到：预约提交、审批通过 / 驳回、自动取消、完成、违约
+- 教师 / 管理员收到：新预约待审批、待审批队列变化
+- 看板、我的预约、审批中心、仪表盘、统计分析收到事件后自动刷新
+- 断线指数退避重连（最长 30 秒），25 秒心跳探测半开连接
+
+### 3.10 缓存与并发控制
+- 设备分页、分类列表、5 类统计接口接入 Spring Cache
+- 本地默认 Caffeine；设置 `REDIS_ENABLED=true` 切换为 Redis，缓存跨实例共享
+- 预约创建 / 审批 / 取消 / 自动流转后清理统计缓存，避免看板数字滞后
+- 抢约时按「设备 + 日期 + 时段」加 Redis 分布式锁，事务提交后再释放
+- 锁被占用返回「该时段正在被其他同学抢约，请稍后重试」
+- Redis 不可用时自动降级，最终仍由数据库唯一索引保证不超卖
+
+### 3.11 Docker 部署
+- `docker compose up -d --build` 一键启动 MySQL、Redis、后端、Nginx 前端
+- MySQL / Redis 带数据卷与健康检查；后端、前端按健康状态依次启动
+- Nginx 托管前端静态资源，并反向代理 `/api` 与 `/ws`（含 WebSocket Upgrade）
+- 数据库表结构与演示数据由后端首次启动自动初始化
+
 ---
 
 ## 4. 预约状态机
@@ -114,28 +142,33 @@
 lab-booking/
 ├─ backend/
 │  ├─ pom.xml
+│  ├─ Dockerfile                          # 多阶段构建：Maven → JRE
 │  └─ src/main/
 │     ├─ java/com/lab/
 │     │  ├─ LabBookingApplication.java   # @EnableScheduling
-│     │  ├─ common/                      # Result、异常、JWT、登录上下文、拦截器
-│     │  ├─ config/                      # Web、BCrypt、演示数据、状态定时任务
+│     │  ├─ common/                      # Result、异常、JWT、登录上下文、拦截器、缓存名
+│     │  ├─ config/                      # Web、BCrypt、缓存、演示数据、状态定时任务
 │     │  ├─ controller/                  # Auth / Device / Category / Booking / User / Stats
 │     │  ├─ mapper/                      # MyBatis 注解 SQL
 │     │  ├─ model/                       # User / Device / Category / TimeSlot / Booking
-│     │  └─ service/                     # 业务规则与状态机
+│     │  ├─ service/                     # 业务规则、状态机、RedisLock、通知
+│     │  └─ ws/                          # WebSocket 握手鉴权、会话管理、推送
 │     └─ resources/
 │        ├─ application.yml
 │        ├─ application-local.yml.example
 │        └─ db/schema.sql
 ├─ frontend/
-│  ├─ vite.config.js                     # 5174 端口、/api 代理、分包配置
+│  ├─ Dockerfile                          # 多阶段构建：Node → Nginx
+│  ├─ nginx.conf                          # SPA 回退 + /api、/ws 反向代理
+│  ├─ vite.config.js                     # 5174 端口、/api 与 /ws 代理、分包配置
 │  └─ src/
 │     ├─ api/                            # Axios 封装与接口模块
-│     ├─ layout/MainLayout.vue           # 侧边栏、顶栏、待审批角标、修改密码
+│     ├─ layout/MainLayout.vue           # 侧边栏、顶栏、实时状态、消息中心、改密
 │     ├─ router/                         # 路由与角色守卫
 │     ├─ stores/auth.js                  # Pinia 登录态
-│     ├─ styles/global.css               # 深空科技主题 + Element Plus 暗色覆盖
+│     ├─ styles/global.css               # 深空科技主题 + 消息浮层
 │     ├─ utils/echarts.js                # ECharts 按需注册
+│     ├─ utils/socket.js                 # WebSocket 连接 / 重连 / 心跳 / 订阅
 │     └─ views/
 │        ├─ Login.vue                    # 科技感登录页
 │        ├─ Dashboard.vue                # 指挥中心仪表盘
@@ -149,7 +182,10 @@ lab-booking/
 │        └─ NotFound.vue
 ├─ docs/
 │  ├─ 学习路线.md                         # 代码导读 + 面试题 + 练习
-│  └─ 接口说明.md                         # 全量接口与示例
+│  ├─ 接口说明.md                         # 全量接口、WebSocket 协议
+│  └─ 部署说明.md                         # Docker / Nginx / 生产清单
+├─ docker-compose.yml                     # MySQL + Redis + 后端 + 前端
+├─ .env.example                           # 部署环境变量模板
 └─ .gitignore
 ```
 
@@ -163,6 +199,8 @@ lab-booking/
 - Maven 3.9+
 - Node.js 18+
 - MySQL 8（默认 `127.0.0.1:3306`，账号 `root`）
+- Redis 7（可选，本地默认使用 Caffeine；体验缓存 / 分布式锁时再启动）
+- Docker Desktop（可选，用于 Compose 一键部署）
 
 数据库不需要手动创建，JDBC 参数带 `createDatabaseIfNotExist=true`，首次启动自动建库并执行 `db/schema.sql`。
 
@@ -206,10 +244,34 @@ java -jar target/lab-booking-backend-1.0.0.jar
 
 ```powershell
 curl.exe http://127.0.0.1:8091/api/health
-# {"code":200,"message":"ok","data":{"status":"UP","service":"lab-booking-backend"}}
+# {"code":200,"message":"ok","data":{"status":"UP","service":"lab-booking-backend","redisEnabled":false,"websocketOnline":0}}
 ```
 
-### 6.4 启动前端（5174）
+`redisEnabled` 表示是否启用了 Redis 缓存 / 分布式锁，`websocketOnline` 是当前在线用户数。
+
+### 6.4 可选：启用 Redis
+
+不配置 Redis 也能完整运行，缓存会自动使用 Caffeine。要体验第三阶段的缓存与分布式锁：
+
+```powershell
+# 本机启动 Redis（默认 6379）
+redis-server
+
+cd backend
+$env:REDIS_ENABLED='true'
+mvn spring-boot:run
+```
+
+再次访问 `/api/health`，应看到 `redisEnabled: true`。此时设备分页、分类、统计接口的结果会写入 Redis：
+
+```powershell
+redis-cli --scan --pattern "lab:cache:*"
+redis-cli ttl "lab:cache:statsOverview:SimpleKey []"
+```
+
+抢约锁的 key 形如 `lock:booking:8_2026-10-28_1`，事务提交后由 Lua 脚本比对 token 再删除。
+
+### 6.5 启动前端（5174）
 
 ```powershell
 cd frontend
@@ -219,7 +281,7 @@ npm run dev
 
 打开 <http://127.0.0.1:5174>。
 
-### 6.5 演示账号
+### 6.6 演示账号
 
 | 用户名 | 密码 | 角色 | 权限 |
 | --- | --- | --- | --- |
@@ -233,13 +295,36 @@ npm run dev
 - 最近 6 天的已完成预约（用于趋势图）
 - 1 条违约记录、1 条待审批、1 条未来已通过预约、今日已完成预约
 
+### 6.7 Docker Compose 一键启动
+
+```powershell
+cd lab-booking
+Copy-Item .env.example .env
+# 修改 .env 中的 DB_PASSWORD、JWT_SECRET
+docker compose up -d --build
+```
+
+打开 <http://127.0.0.1:8080>。常用命令：
+
+```powershell
+docker compose ps            # 查看服务与健康状态
+docker compose logs -f backend
+docker compose down          # 停止（保留数据卷）
+docker compose down -v       # 停止并清空数据库 / Redis 数据
+```
+
+Compose 会启动 MySQL（宿主机 3307）、Redis（宿主机 6380）、后端（8091）、Nginx 前端（8080）。
+详细说明见 [docs/部署说明.md](docs/部署说明.md)。
+
+> 本机当前未安装 Docker，Compose 文件已按标准多阶段构建编写，并做了静态检查；Redis / WebSocket / 缓存 / 锁均已在本机以非 Docker 方式完成真实联调。
+
 ---
 
 ## 7. 接口一览
 
 | 方法 | 路径 | 说明 | 权限 |
 | --- | --- | --- | --- |
-| GET | `/api/health` | 健康检查 | 公开 |
+| GET | `/api/health` | 健康检查（含 Redis / WS 状态） | 公开 |
 | POST | `/api/auth/login` | 登录，返回 token + 用户信息 | 公开 |
 | GET | `/api/auth/me` | 当前登录用户 | 登录 |
 | POST | `/api/auth/password` | 修改自己的密码 | 登录 |
@@ -271,6 +356,7 @@ npm run dev
 | POST | `/api/users` | 新增用户 | 管理员 |
 | PUT | `/api/users/{id}` | 编辑用户 | 管理员 |
 | POST | `/api/users/{id}/reset-password` | 重置密码 | 管理员 |
+| WS | `/ws/notifications?token=` | 实时通知（JSON 文本） | 登录 |
 
 请求头统一携带：
 
@@ -278,7 +364,7 @@ npm run dev
 Authorization: Bearer <token>
 ```
 
-详细请求 / 响应示例见 [docs/接口说明.md](docs/接口说明.md)。
+WebSocket 例外：浏览器原生 WebSocket 不能设置请求头，token 通过查询参数传递，由握手拦截器校验。详细协议见 [docs/接口说明.md](docs/接口说明.md#10-websocket-实时通知)。
 
 ---
 
@@ -326,6 +412,74 @@ active_key = deviceId_bookingDate_slotId
 - 图标只注册项目实际使用的 20 个，图标 chunk 从 170 KB 降到约 26 KB
 - 图表统一在 `onBeforeUnmount` 中 `dispose`，并监听窗口 `resize`
 
+### 8.6 两级缓存：Caffeine 默认，Redis 可选
+
+```text
+未开启 Redis：Controller → Service → Caffeine（进程内，60 秒）
+开启 Redis：  Controller → Service → Redis（跨实例共享，按业务设置 TTL）
+```
+
+- 通过 `app.redis.enabled` + `@ConditionalOnProperty` 决定是否注册 `RedisCacheManager`
+- 缓存名集中在 `CacheNames`，避免注解里散落字符串
+- TTL：设备分页 60 秒、分类 5 分钟、统计 30~300 秒
+- `CacheErrorHandler` 对 Redis 故障做限流日志并降级查库，不让缓存拖垮主流程
+- 统计缓存由 `StatsCacheEvictor` 在预约变更后主动清理，而不是等 TTL 过期
+- 开启 `transactionAware()`，缓存清理延迟到事务提交后执行，避免回滚后误删
+- Redis 值使用 `GenericJackson2JsonRedisSerializer`，并显式开启 `defaultTyping`，否则 `PageResult` 反序列化会变成 `LinkedHashMap` 导致 `ClassCastException`（本次联调真实踩坑并修复）
+
+### 8.7 Redis 分布式锁 + 数据库唯一索引双保险
+
+```text
+抢约请求
+  │
+  ├─ SET lock:booking:{deviceId}_{date}_{slotId} {token} NX EX 5
+  │     失败 → 「该时段正在被其他同学抢约，请稍后重试」
+  │     成功 ↓
+  ├─ 业务校验 + insert（active_key 唯一索引）
+  ├─ 事务提交
+  └─ Lua：GET key == token ? DEL key : 0
+```
+
+- 锁粒度为「设备 + 日期 + 时段」，不同设备 / 时段互不阻塞
+- 加锁用 `SET NX PX`，保证「判断 + 设置」原子性
+- 解锁用 Lua 比对 token，避免误删其他请求的锁
+- **事务提交后**才释放锁；提前释放会让下一个请求在本事务提交前拿到锁，仍然撞唯一索引
+- 锁 TTL 5 秒，进程崩溃也能自动释放
+- Redis 不可用时返回 `NOOP_TOKEN` 直接放行，最终由数据库唯一索引兜底
+- 结论：**Redis 锁优化体验（减少无效写冲突），数据库约束保证正确性（绝不超卖）**
+
+### 8.8 WebSocket 实时通知
+
+```text
+业务事务 ──提交成功──▶ NotificationService.afterCommit
+                              │
+                              ├─ 指定用户：BOOKING_CREATED / APPROVED / ...
+                              └─ 角色广播：PENDING_CREATED / PENDING_CHANGED
+                                        │
+                                  NotificationWebSocketHandler
+                                  用户 → 多个会话（多标签页）
+                                        │
+                                  前端 socket.js
+                                  消息中心 + 自定义事件刷新页面
+```
+
+- 握手阶段用 `JwtHandshakeInterceptor` 校验 `?token=`，解析出 `uid` / `role` 放入会话属性
+- 一个用户可同时有多个标签页，会话用 `ConcurrentHashMap` 管理
+- 推送统一放在 `afterCommit`：事务回滚不会发「预约成功」的假消息
+- 前端 25 秒 ping / 服务端 pong，用于发现半开连接；断线指数退避重连
+- 前端把消息分成两类：
+  - 消息中心：预约 / 审批 / 违约等需要阅读的通知
+  - 静默事件：`PENDING_CHANGED` 只刷新角标；`lab:booking-changed` 让看板、列表、图表自动刷新
+- WebSocket 发送对 session 加锁，避免多线程同时写同一个连接
+
+### 8.9 Docker 镜像分层
+
+- 后端多阶段构建：Maven 构建层与 JRE 运行层分离，运行镜像更小
+- 先 `COPY pom.xml` 再 `dependency:go-offline`，依赖不变时复用缓存层
+- 前端多阶段构建：Node 构建产物交给 Nginx，运行镜像不含 Node
+- Compose 用健康检查控制启动顺序：MySQL / Redis 就绪 → 后端 → 前端
+- 敏感配置通过 `.env` 注入，`.env` 不提交；镜像中不包含 `application-local.yml`
+
 ---
 
 ## 9. 已验证场景
@@ -344,17 +498,25 @@ active_key = deviceId_bookingDate_slotId
 | 用户新增 / 编辑 / 重置密码 / 禁用自己 | ✅ |
 | 修改密码后旧密码失效、新密码可登录 | ✅ |
 | 前端生产构建、浏览器控制台无报错 | ✅ |
+| Redis 缓存命中（设备分页第二次请求走缓存） | ✅ 真实 Redis 8.10 |
+| 缓存 TTL 与统计缓存主动清理 | ✅ `redis-cli monitor` 捕获 DEL |
+| Redis 锁被占用时返回友好提示 | ✅ 400 + 中文提示 |
+| 锁在事务提交后释放（`EXISTS=0`） | ✅ |
+| WebSocket 学生收到提交 / 通过 / 取消 | ✅ |
+| WebSocket 教师收到新待审批 / 队列变化 | ✅ |
+| 多标签页 / 在线用户统计（`websocketOnline`） | ✅ |
+| Docker Compose 文件编写与静态检查 | ✅（本机无 Docker，未实际构建） |
 
 ---
 
 ## 10. 下一阶段规划
 
-1. **Redis**：热点设备缓存、预约分布式锁、待审批角标缓存
-2. **WebSocket**：审批结果实时推送、看板占用状态实时刷新
-3. **消息通知**：预约成功 / 审批结果 / 签到提醒（站内信或邮件）
-4. **导出与审计**：预约记录 Excel 导出、操作日志
-5. **工程化**：Docker Compose、GitHub Actions、单元测试、接口文档 Swagger
-6. **部署**：Nginx 反向代理、HTTPS、生产环境配置分离
+1. **消息持久化**：站内信落库、未读数、离线消息补偿（当前通知只推在线用户）
+2. **导出与审计**：预约记录 Excel 导出、操作日志、登录日志
+3. **可观测性**：Actuator + Prometheus 指标、慢 SQL、Redis 命中率看板
+4. **工程化**：单元测试 / Testcontainers、Swagger / OpenAPI、GitHub Actions 自动构建镜像
+5. **部署增强**：HTTPS、多环境配置、Kubernetes / 云服务器部署、备份与恢复
+6. **业务增强**：违约次数限制、候补队列、邮件 / 企业微信通知
 
 学习顺序和每阶段重点见 [docs/学习路线.md](docs/学习路线.md)。
 
@@ -381,6 +543,28 @@ token 过期或未携带。前端会自动清理登录态并跳回登录页；�
 
 确认后端在 8091、前端代理指向 `http://127.0.0.1:8091`，并确认修改后端代码后已重新打包 / 重启。
 
+**Redis 没启动 / 想临时关掉**
+
+默认 `REDIS_ENABLED=false`，不启动 Redis 也能跑。若设置了 `true` 但 Redis 未启动：
+
+- 缓存会通过 `CacheErrorHandler` 降级查库，接口仍可用
+- 控制台会打印限流后的 WARN 日志
+- 想彻底关闭：去掉 `REDIS_ENABLED` 环境变量，重启后端
+
+**顶栏显示 OFFLINE / 收不到实时通知**
+
+1. 确认后端 `/api/health` 的 `websocketOnline` 是否变化
+2. 开发期确认 Vite 已配置 `/ws` 代理且 `ws: true`
+3. 生产环境确认 Nginx `/ws/` 转发 `Upgrade` / `Connection` 头
+4. token 过期时握手会返回 401，重新登录即可
+
+**Docker 构建很慢 / 失败**
+
+- 首次构建需要下载 Maven / npm 依赖，属正常现象
+- 确认 Docker Desktop 已启动，且能访问 Docker Hub
+- 后端镜像构建需要联网下载依赖；国内可配置 Maven / npm 镜像
+- 若 MySQL 健康检查一直失败，查看 `docker compose logs mysql`，确认 `.env` 中密码没有特殊字符导致解析问题
+
 **看板没有数据**
 
 首次启动会自动写入演示数据；如果 `booking` 表已有数据则不会重复插入。可以清空 `booking` 表后重启后端重新生成。
@@ -389,8 +573,10 @@ token 过期或未携带。前端会自动清理登录态并跳回登录页；�
 
 ## 12. 安全说明
 
-- 数据库密码、JWT 密钥只放在本地 `application-local.yml`
-- 示例文件只保留占位符
+- 数据库密码、JWT 密钥只放在本地 `application-local.yml` 或部署环境变量
+- 示例文件只保留占位符，`.env` 已被 `.gitignore` 忽略
 - 演示账号密码仅用于本地学习，部署前必须修改
 - 生产环境建议：HTTPS、更短 token 有效期 + 刷新机制、登录失败限流、操作审计、密码复杂度策略
 - 当前 JWT 无黑名单，禁用账号后已签发 token 在过期前仍有效；生产环境可结合 Redis 做主动失效
+- WebSocket 使用查询参数传 token，可能出现在 Nginx 访问日志中；生产环境建议改为 HttpOnly Cookie 或一次性短期 ticket
+- WebSocket 当前允许所有来源（`setAllowedOriginPatterns("*")`），上线时应限制为实际域名

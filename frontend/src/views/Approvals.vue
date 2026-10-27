@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { fetchPending, fetchAllBookings, approveBooking } from '../api/booking'
 import { fetchOverview } from '../api/stats'
@@ -153,9 +153,25 @@ async function quickApprove(row) {
   await Promise.all([loadPending(), loadOverview()])
 }
 
+// 待审批队列实时刷新：新提交 / 撤销 / 超时取消都会收到推送
+let realtimeTimer = null
+function handleRealtime() {
+  if (realtimeTimer) clearTimeout(realtimeTimer)
+  realtimeTimer = setTimeout(() => {
+    loadPending()
+    loadOverview()
+  }, 400)
+}
+
 onMounted(() => {
   loadPending()
   loadOverview()
+  window.addEventListener('lab:pending-changed', handleRealtime)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('lab:pending-changed', handleRealtime)
+  if (realtimeTimer) clearTimeout(realtimeTimer)
 })
 </script>
 

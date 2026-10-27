@@ -1,10 +1,11 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
 import { fetchOverview } from '../api/stats'
 import { changePassword } from '../api/auth'
+import { closeSocket, connectSocket, onSocketMessage, onSocketState } from '../utils/socket'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,6 +16,79 @@ const pendingCount = ref(0)
 const now = ref(new Date())
 let timer = null
 let poller = null
+
+/* ---------------- 实时通知 ---------------- */
+const wsState = ref('offline')
+const messages = ref([])
+const unread = ref(0)
+let unsubscribeMessage = null
+let unsubscribeState = null
+
+const notifyTypeMap = {
+  BOOKING_CREATED: 'info',
+  BOOKING_APPROVED: 'success',
+  BOOKING_REJECTED: 'warning',
+  BOOKING_CANCELLED: 'info',
+  BOOKING_COMPLETED: 'success',
+  BOOKING_VIOLATED: 'error',
+  PENDING_CREATED: 'warning',
+}
+
+function notifyTone(type) {
+  if (type === 'BOOKING_APPROVED' || type === 'BOOKING_COMPLETED') return 'ok'
+  if (type === 'BOOKING_REJECTED' || type === 'PENDING_CREATED') return 'warn'
+  if (type === 'BOOKING_VIOLATED') return 'bad'
+  return 'info'
+}
+
+function handleSocketMessage(message) {
+  if (!message || message.type === 'CONNECTED') return
+
+  if (message.type === 'PENDING_CHANGED' || message.type === 'PENDING_CREATED') {
+    loadBadge()
+    window.dispatchEvent(new Event('lab:pending-changed'))
+  }
+  if (message.type.startsWith('BOOKING_')) {
+    window.dispatchEvent(new Event('lab:booking-changed'))
+  }
+
+  // PENDING_CHANGED 只做静默刷新，不进入消息中心
+  if (message.type === 'PENDING_CHANGED') return
+
+  const item = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    type: message.type,
+    title: message.title,
+    content: message.content,
+    at: message.at,
+  }
+  messages.value.unshift(item)
+  if (messages.value.length > 20) messages.value = messages.value.slice(0, 20)
+  unread.value += 1
+
+  ElNotification({
+    title: message.title || '实时通知',
+    message: message.content || '',
+    type: notifyTypeMap[message.type] || 'info',
+    duration: 4500,
+    position: 'bottom-right',
+  })
+}
+
+function markAllRead() {
+  unread.value = 0
+}
+
+function clearMessages() {
+  messages.value = []
+  unread.value = 0
+}
+
+const wsLabel = computed(() => {
+  if (wsState.value === 'online') return 'REALTIME'
+  if (wsState.value === 'connecting') return 'LINKING'
+  return 'OFFLINE'
+})
 
 const roleTextMap = {
   ADMIN: '管理员',
@@ -160,12 +234,22 @@ onMounted(() => {
   poller = setInterval(loadBadge, 60_000)
   // 审批 / 预约后立即刷新角标，无需等待轮询
   window.addEventListener('lab:pending-changed', loadBadge)
+
+  // WebSocket：先订阅再连接，避免错过 CONNECTED 之后的第一条消息
+  unsubscribeState = onSocketState((state) => {
+    wsState.value = state
+  })
+  unsubscribeMessage = onSocketMessage(handleSocketMessage)
+  connectSocket(auth.token)
 })
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
   if (poller) clearInterval(poller)
   window.removeEventListener('lab:pending-changed', loadBadge)
+  unsubscribeState?.()
+  unsubscribeMessage?.()
+  closeSocket()
 })
 </script>
 
@@ -236,10 +320,53 @@ onBeforeUnmount(() => {
             <span class="clock-time mono">{{ timeText }}</span>
             <span class="clock-date">{{ dateText }}</span>
           </div>
-          <div class="online-pill">
+          <div class="online-pill" :class="wsState" :title="`WebSocket ${wsState}`">
             <span class="status-dot" />
-            ONLINE
+            {{ wsLabel }}
           </div>
+          <el-popover
+            placement="bottom-end"
+            :width="340"
+            trigger="click"
+            popper-class="notify-popper"
+          >
+            <template #reference>
+              <button
+                type="button"
+                class="bell-btn"
+                :class="{ active: unread > 0 }"
+                :title="unread > 0 ? `${unread} 条未读消息` : '实时消息'"
+                @click="markAllRead"
+              >
+                <el-icon :size="17"><Bell /></el-icon>
+                <span v-if="unread" class="bell-badge">{{ unread > 9 ? '9+' : unread }}</span>
+              </button>
+            </template>
+
+            <div class="notify-panel">
+              <div class="notify-head">
+                <span>实时消息</span>
+                <button v-if="messages.length" type="button" class="notify-clear" @click="clearMessages">
+                  清空
+                </button>
+              </div>
+              <div v-if="!messages.length" class="notify-empty">
+                <el-icon :size="22"><Bell /></el-icon>
+                <p>暂无消息</p>
+                <span>预约、审批、违约状态变化会实时出现在这里</span>
+              </div>
+              <div v-else class="notify-list">
+                <div v-for="item in messages" :key="item.id" class="notify-item">
+                  <span class="notify-dot" :class="notifyTone(item.type)" />
+                  <div class="notify-body">
+                    <strong>{{ item.title }}</strong>
+                    <p>{{ item.content }}</p>
+                    <span class="notify-time">{{ item.at }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </el-popover>
           <el-tag :type="roleTagMap[auth.role] || 'info'" effect="light" round class="role-tag">
             {{ roleTextMap[auth.role] || auth.role }}
           </el-tag>
@@ -593,6 +720,70 @@ onBeforeUnmount(() => {
   background: #34d399;
   box-shadow: 0 0 8px #34d399;
   animation: pulse 2s infinite;
+}
+
+.online-pill.connecting {
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.08);
+  color: #fcd34d;
+}
+
+.online-pill.connecting .status-dot {
+  background: #fbbf24;
+  box-shadow: 0 0 8px #fbbf24;
+}
+
+.online-pill.offline {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(248, 113, 113, 0.07);
+  color: #fca5a5;
+}
+
+.online-pill.offline .status-dot {
+  background: #f87171;
+  box-shadow: 0 0 8px #f87171;
+  animation: none;
+}
+
+.bell-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(74, 130, 210, 0.22);
+  background: rgba(12, 24, 44, 0.6);
+  color: #9db6d8;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.bell-btn:hover,
+.bell-btn.active {
+  color: #eaf4ff;
+  border-color: rgba(80, 170, 255, 0.5);
+  background: rgba(47, 140, 255, 0.1);
+  box-shadow: 0 0 18px rgba(47, 140, 255, 0.22);
+}
+
+.bell-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #fb7185, #f43f5e);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.55);
 }
 
 .role-tag {

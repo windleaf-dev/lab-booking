@@ -1,6 +1,6 @@
 package com.lab.config;
 
-import com.lab.service.BookingService;
+import com.lab.service.BookingStatusService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -14,16 +14,16 @@ public class BookingStatusTask {
 
     private static final Logger log = LoggerFactory.getLogger(BookingStatusTask.class);
 
-    private final BookingService bookingService;
+    private final BookingStatusService bookingStatusService;
 
-    public BookingStatusTask(BookingService bookingService) {
-        this.bookingService = bookingService;
+    public BookingStatusTask(BookingStatusService bookingStatusService) {
+        this.bookingStatusService = bookingStatusService;
     }
 
     @Scheduled(fixedDelay = 60_000, initialDelay = 15_000)
     public void refresh() {
         try {
-            bookingService.refreshStatuses();
+            bookingStatusService.refreshStatuses();
         } catch (Exception e) {
             log.warn("预约状态刷新失败：{}", e.getMessage());
         }
